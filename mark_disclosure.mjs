@@ -101,27 +101,52 @@ async function readSharePrice(cid) {
 
 console.log(`MARK DISCLOSURE ${new Date().toISOString()}${DRY ? ' [DRY RUN]' : ''}`);
 const props = loadProperties();
+// A genuinely empty/malformed properties.js (parse failure, unexpected shape,
+// a bad PROPERTIES_JS path) must NOT look identical to "every property is
+// exited today" - both currently produce targets.length === 0, but only one
+// of them is a real failure a cron running this should surface loudly.
+if (!Object.keys(props).length) {
+  console.error(`FATAL: loadProperties() returned no properties at all from ${PROPERTIES_JS} - refusing to treat this as "nothing to mark". Check the file exists and parses.`);
+  process.exit(1);
+}
 const targets = Object.values(props).filter(p => (p.lifecycle ?? 'operating') !== 'exited' && !EXCLUDE.has(p.key));
 console.log(`${targets.length} non-exited, non-pool-owned properties to mark`);
 
 const date = new Date().toISOString().slice(0, 10);
 const rows = []; // { key, symbol, priceStr }
+let readErrors = 0;
 for (const p of targets) {
   const addrPath = `${DEPLOY_DIR}/addresses.${p.key}.testnet.json`;
-  if (!existsSync(addrPath)) { console.error(`  ${p.key}: SKIP - no ${addrPath}`); continue; }
+  if (!existsSync(addrPath)) { console.error(`  ${p.key}: SKIP - no ${addrPath}`); readErrors++; continue; }
   const addrs = JSON.parse(readFileSync(addrPath, 'utf8').replace(/^﻿/, ''));
   const settlement = addrs.contracts?.settlement;
-  if (!settlement) { console.error(`  ${p.key}: SKIP - no settlement contract in address file`); continue; }
+  if (!settlement) { console.error(`  ${p.key}: SKIP - no settlement contract in address file`); readErrors++; continue; }
   try {
     const raw = await readSharePrice(settlement);
-    const priceStr = (Number(raw) / Number(PRICE_SCALE)).toFixed(4);
+    // Same formatting convention as mark_cron.mjs's own emitMarkReceipt call
+    // (String(Number(price) / 1e7)) - matched deliberately so marks.json
+    // doesn't carry two different price-string shapes for the same scale.
+    const priceStr = String(Number(raw) / Number(PRICE_SCALE));
     console.log(`  ${p.key}: share_price = $${priceStr}`);
     rows.push({ key: p.key, symbol: p.symbol, priceStr });
   } catch (e) {
     console.error(`  ${p.key}: READ ERROR - ${e.message}`);
+    readErrors++;
   }
 }
-if (!rows.length) { console.log('nothing to mark - exiting'); process.exit(0); }
+// A run where EVERY target failed to read is a failure, not "nothing to
+// mark" - the latter only means today's catalog happens to have zero
+// eligible properties, which read/write success on zero targets covers
+// fine. Distinguish them by exit code so a cron (or a human re-running by
+// hand) can tell "ran clean, nothing due" from "something is broken".
+if (!rows.length) {
+  if (targets.length > 0 && readErrors === targets.length) {
+    console.error(`FATAL: all ${targets.length} target(s) failed to read - exiting nonzero rather than reporting a silent success.`);
+    process.exit(1);
+  }
+  console.log('nothing to mark - exiting');
+  process.exit(0);
+}
 if (DRY) { console.log(`[dry run] would anchor ${rows.length} marks in one transaction`); process.exit(0); }
 
 // ---- one manageData op per property, one transaction, one shared tx hash ----
