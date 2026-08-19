@@ -78,7 +78,18 @@ const signer = Keypair.fromSecret(process.env.OSRE_DEPLOYER_SECRET);
 
 // Same mechanism the mark surfaces themselves already trust hvp/kmcsr for -
 // those two stay on mark_cron.mjs's pool-oracle-anchored mechanism.
-const EXCLUDE = new Set(['hvp', 'kmcsr']);
+// Extended 2026-08-19 (bd osre-bvd): found live that OSREScaleEquity
+// (st06-10) and OSREScaleDebt (st01sr-05sr) are real, ACTIVE credit
+// facilities too - built 2026-08-11/12, discovered stale and fixed the same
+// day. Their pool-oracle price is now the authoritative one (real lending
+// math depends on it); this script defers to mark_cron.mjs for all 10
+// rather than writing a redundant, lower-priority book-value row that would
+// just lose the same-day dedup race in emitMarkReceipt anyway.
+const EXCLUDE = new Set([
+  'hvp', 'kmcsr',
+  'st06', 'st07', 'st08', 'st09', 'st10',
+  'st01sr', 'st02sr', 'st03sr', 'st04sr', 'st05sr',
+]);
 
 function loadProperties() {
   const raw = readFileSync(PROPERTIES_JS, 'utf8').replace(/^﻿/, '');
